@@ -880,7 +880,7 @@ public:
 
     uint32_t ratio   = elem_ratio(fmt_s);
     uint32_t k_words = cfg::tcK;
-    uint32_t e_bytes = elem_bits(fmt_s) / 8;
+    uint32_t e_bytes = (elem_bits(fmt_s) >= 8) ? (elem_bits(fmt_s) / 8) : 1;
 
     // Decode smem descriptors (B always from smem, A optionally).
     lmem_desc_t sd_a, sd_b;

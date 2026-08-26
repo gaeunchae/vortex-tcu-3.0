@@ -162,6 +162,13 @@ endif
 VPP_FLAGS += --link --target $(TARGET) --platform $(PLATFORM) --save-temps --no_ip_cache
 VPP_FLAGS += --vivado.synth.jobs $(JOBS) --vivado.impl.jobs $(JOBS)
 
+# SITE-LOCAL WORKAROUND (not upstreamable):
+# Vivado 2025.1 cannot elaborate the encrypted clk_metadata_adapter IP shipped
+# with the 2022.2-era xdma_3_202210_1 platforms -- every platform clock adapter
+# OOC run dies with "[Synth 8-5809] Error generated from encrypted envelope".
+# This repo holds a replacement IP that resolves ahead of the platform's copy.
+VPP_FLAGS += --user_ip_repo_paths /home/data/xilinx_ip/clk_metadata_adapter
+
 # register compilation hooks
 VPP_FLAGS += --xp "vivado_prop:run.impl_1.STEPS.OPT_DESIGN.TCL.PRE=${SRC_DIR}/pre_opt_hook.tcl"
 
