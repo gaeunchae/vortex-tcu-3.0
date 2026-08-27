@@ -111,7 +111,7 @@ SRCS += $(SRC_DIR)/processor.cpp
 TOP = rtlsim_shim
 
 VL_FLAGS = --exe
-VL_FLAGS += --language 1800-2012 --assert -Wall -Wpedantic
+VL_FLAGS += --language 1800-2012 --assert -Wall -Wpedantic -Wno-fatal
 VL_FLAGS += -Wno-DECLFILENAME -Wno-REDEFMACRO
 VL_FLAGS += --x-initial unique --x-assign unique
 VL_FLAGS += verilator.vlt
@@ -125,7 +125,7 @@ VL_FLAGS += --cc $(TOP) --top-module $(TOP)
 RTL_DIRS := $(patsubst -I%,%,$(filter -I%,$(RTL_INCLUDE)))
 
 # Discover RTL source files from source directories
-RTL_SRCS := $(shell find $(RTL_DIRS) -type f \( -name '*.v' -o -name '*.vh' -o -name '*.sv' -o -name '*.vi' \))
+RTL_SRCS := $(shell find $(RTL_DIRS) \( -name syn -o -name .Xil -o -name _x \) -prune -o -type f \( -name '*.v' -o -name '*.vh' -o -name '*.sv' -o -name '*.vi' \) -print)
 
 # Enable Verilator multithreaded simulation
 THREADS ?= $(shell python3 -c 'import multiprocessing as mp; print(mp.cpu_count())')
