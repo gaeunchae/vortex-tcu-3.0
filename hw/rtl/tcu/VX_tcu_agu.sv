@@ -224,12 +224,14 @@ module VX_tcu_agu import VX_gpu_pkg::*, VX_tcu_pkg::*; #(
 `ifdef VX_CFG_LMEM_ENABLE
     wire [LSU_ADDR_WIDTH-1:0] lmem_addr_lo =
         LSU_ADDR_WIDTH'(`VX_CFG_XLEN'(`VX_MEM_LMEM_BASE_ADDR) >> `CLOG2(LSU_WORD_SIZE));
-    wire [LSU_ADDR_WIDTH-1:0] lmem_addr_hi =
+    // Inclusive top: see VX_lsu_slice.sv -- base + size wraps at the top of the
+    // XLEN address space and silently kills the match.
+    wire [LSU_ADDR_WIDTH-1:0] lmem_addr_last =
         LSU_ADDR_WIDTH'((`VX_CFG_XLEN'(`VX_MEM_LMEM_BASE_ADDR)
-                       + `VX_CFG_XLEN'(1 << `VX_CFG_LMEM_LOG_SIZE))
+                       + `VX_CFG_XLEN'((1 << `VX_CFG_LMEM_LOG_SIZE) - 1))
                        >> `CLOG2(LSU_WORD_SIZE));
     wire base_is_local = (base_word_addr >= lmem_addr_lo)
-                      && (base_word_addr <  lmem_addr_hi);
+                      && (base_word_addr <= lmem_addr_last);
 `else
     wire base_is_local = 1'b0;
 `endif

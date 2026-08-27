@@ -20,7 +20,11 @@ VX_ISA_IMPL_ID   = 0
 [memmap]
 VX_MEM_USER_BASE_ADDR       = "expr: 0x0000000000010000 if ($XLEN == 64) else 0x00010000"
 VX_MEM_STACK_LOG2_SIZE      = 13
-VX_MEM_STACK_BASE_ADDR      = "expr: 0x00000001FFFF0000 if ($XLEN == 64) else 0xFFFF0000"
+# rv64 base is 4MB-aligned and sits 4MB below the top of the 33-bit window so
+# LMEM_LOG_SIZE can go up to 22 without breaking the LMEM alignment assert
+# (VX_mem_unit.sv) or wrapping the base+size range checks. 0x1FFFF0000 was
+# only 64KB-aligned, which caps LMEM at 16. Matches the v2.x memory map.
+VX_MEM_STACK_BASE_ADDR      = "expr: 0x00000001FFC00000 if ($XLEN == 64) else 0xFFFF0000"
 VX_MEM_LMEM_BASE_ADDR       = "expr: $VX_MEM_STACK_BASE_ADDR"
 VX_MEM_IO_BASE_ADDR         = "expr: 0x0000000000000040 if ($XLEN == 64) else 0x00000040"
 VX_MEM_PAGE_TABLE_BASE_ADDR = "expr: 0x00000000F0000000 if ($XLEN == 64) else 0xF0000000"

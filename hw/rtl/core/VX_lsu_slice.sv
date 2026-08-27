@@ -80,8 +80,11 @@ module VX_lsu_slice import VX_gpu_pkg::*; #(
     `ifdef VX_CFG_LMEM_ENABLE
         // is local memory address
         wire [MEM_ADDRW-1:0] lmem_addr_start = MEM_ADDRW'(`VX_CFG_XLEN'(`VX_MEM_LMEM_BASE_ADDR) >> MEM_ASHIFT);
-        wire [MEM_ADDRW-1:0] lmem_addr_end = MEM_ADDRW'((`VX_CFG_XLEN'(`VX_MEM_LMEM_BASE_ADDR) + `VX_CFG_XLEN'(1 << `VX_CFG_LMEM_LOG_SIZE)) >> MEM_ASHIFT);
-        assign mem_req_attr_struct[i].is_addr_local = (block_addr >= lmem_addr_start) && (block_addr < lmem_addr_end);
+        // Inclusive top: base + size wraps to 0 when the LMEM window ends at the
+        // top of the XLEN address space (rv32 base 0xFFFF0000 + 64KB), which
+        // silently disables the whole range match. Use the last valid address.
+        wire [MEM_ADDRW-1:0] lmem_addr_last = MEM_ADDRW'((`VX_CFG_XLEN'(`VX_MEM_LMEM_BASE_ADDR) + `VX_CFG_XLEN'((1 << `VX_CFG_LMEM_LOG_SIZE) - 1)) >> MEM_ASHIFT);
+        assign mem_req_attr_struct[i].is_addr_local = (block_addr >= lmem_addr_start) && (block_addr <= lmem_addr_last);
     `else
         assign mem_req_attr_struct[i].is_addr_local = 1'b0;
     `endif
