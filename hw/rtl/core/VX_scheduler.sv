@@ -155,27 +155,82 @@ module VX_scheduler import VX_gpu_pkg::*; #(
     // Per-CTA + per-warp sp_ram drivers
     // -----------------------------------------------------------------------
 
-    assign cta_warp_write       = cta_fire;
-    assign cta_warp_waddr       = cta_wid;
-    assign cta_warp_wdata.cta_rank = cta_csrs.cta_rank;
-
     // Per-lane CTA thread coordinates, expanded divide-free from the warp base.
     // Lane 0 is the base; each subsequent lane advances by one along X with a
-    // single-wrap carry into Y then Z. Computed at dispatch and stored in
-    // cta_warp_ram so CTA_THREAD_ID reads cost a single cycle with no divider.
-    // feed-forward ripple over a packed array; split_var avoids a false UNOPTFLAT.
-    wire [`VX_CFG_NUM_THREADS-1:0][2:0][CTA_TID_WIDTH-1:0] cta_tid_w /* verilator split_var */;
-    assign cta_tid_w[0] = cta_base_tid;
-    for (genvar j = 1; j < `VX_CFG_NUM_THREADS; ++j) begin : g_cta_tid_ripple
-        wire [CTA_TID_WIDTH:0] nx = {1'b0, cta_tid_w[j-1][0]} + (CTA_TID_WIDTH+1)'(1);
-        wire wrap_x = (nx >= {1'b0, cta_csrs.block_dim[0][CTA_TID_WIDTH-1:0]});
-        wire [CTA_TID_WIDTH:0] ny = {1'b0, cta_tid_w[j-1][1]} + (CTA_TID_WIDTH+1)'(wrap_x);
-        wire wrap_y = wrap_x && (ny >= {1'b0, cta_csrs.block_dim[1][CTA_TID_WIDTH-1:0]});
-        assign cta_tid_w[j][0] = wrap_x ? CTA_TID_WIDTH'(nx - {1'b0, cta_csrs.block_dim[0][CTA_TID_WIDTH-1:0]}) : CTA_TID_WIDTH'(nx);
-        assign cta_tid_w[j][1] = wrap_y ? CTA_TID_WIDTH'(ny - {1'b0, cta_csrs.block_dim[1][CTA_TID_WIDTH-1:0]}) : CTA_TID_WIDTH'(ny);
-        assign cta_tid_w[j][2] = cta_tid_w[j-1][2] + CTA_TID_WIDTH'(wrap_y);
+    // single-wrap carry into Y then Z. Stored in cta_warp_ram so CTA_THREAD_ID
+    // reads cost a single cycle with no divider.
+    //
+    // Lane j depends on lane j-1, so as one combinational blob this ripple is
+    // O(NUM_THREADS) deep. At NUM_THREADS=32 it was the worst path of the U55C
+    // build: 199 logic levels / 31 CARRY8 (= one per lane), 43.5ns of data path
+    // against a 10ns target, WNS -33.6ns. Split it into CTA_TID_SEG-lane
+    // segments with a register between segments: depth becomes O(CTA_TID_SEG)
+    // and the cta_warp_ram write lands CTA_TID_NSTG cycles after cta_fire.
+    //
+    // Safe because the result is only read back through CTA_THREAD_ID out of
+    // cta_warp_ram, which cannot happen before the warp has fetched, decoded
+    // and issued its first instruction -- far more than CTA_TID_NSTG cycles.
+    // block_dim travels down the pipeline with the data: back-to-back CTAs may
+    // carry different block dimensions, so a later stage must not sample the
+    // live cta_csrs. split_var avoids a false UNOPTFLAT on the ripple array.
+    localparam int CTA_TID_SEG  = 8;
+    localparam int CTA_TID_NSTG = (`VX_CFG_NUM_THREADS + CTA_TID_SEG - 1) / CTA_TID_SEG;
+
+    cta_warp_t                                       cta_tid_pipe_q [CTA_TID_NSTG];
+    logic [CTA_TID_NSTG-1:0]                         cta_tid_pipe_vld;
+    logic [CTA_TID_NSTG-1:0][NW_WIDTH-1:0]           cta_tid_pipe_wad;
+    logic [CTA_TID_NSTG-1:0][1:0][CTA_TID_WIDTH-1:0] cta_tid_pipe_bdim;
+
+    for (genvar s = 0; s < CTA_TID_NSTG; ++s) begin : g_cta_tid_stage
+        localparam int LO = s * CTA_TID_SEG;
+        localparam int HI = ((s + 1) * CTA_TID_SEG > `VX_CFG_NUM_THREADS)
+                          ? `VX_CFG_NUM_THREADS : ((s + 1) * CTA_TID_SEG);
+        localparam int J0 = (s == 0) ? 1 : LO;
+
+        wire [`VX_CFG_NUM_THREADS-1:0][2:0][CTA_TID_WIDTH-1:0] tid_c /* verilator split_var */;
+        wire [1:0][CTA_TID_WIDTH-1:0] bdim_c;
+
+        if (s == 0) begin : g_head
+            assign bdim_c   = {cta_csrs.block_dim[1][CTA_TID_WIDTH-1:0],
+                               cta_csrs.block_dim[0][CTA_TID_WIDTH-1:0]};
+            assign tid_c[0] = cta_base_tid;
+        end else begin : g_tail
+            assign bdim_c = cta_tid_pipe_bdim[s-1];
+            for (genvar k = 0; k < LO; ++k) begin : g_fwd
+                assign tid_c[k] = cta_tid_pipe_q[s-1].cta_tid[k];
+            end
+        end
+
+        for (genvar j = J0; j < HI; ++j) begin : g_cta_tid_ripple
+            wire [CTA_TID_WIDTH:0] nx = {1'b0, tid_c[j-1][0]} + (CTA_TID_WIDTH+1)'(1);
+            wire wrap_x = (nx >= {1'b0, bdim_c[0]});
+            wire [CTA_TID_WIDTH:0] ny = {1'b0, tid_c[j-1][1]} + (CTA_TID_WIDTH+1)'(wrap_x);
+            wire wrap_y = wrap_x && (ny >= {1'b0, bdim_c[1]});
+            assign tid_c[j][0] = wrap_x ? CTA_TID_WIDTH'(nx - {1'b0, bdim_c[0]}) : CTA_TID_WIDTH'(nx);
+            assign tid_c[j][1] = wrap_y ? CTA_TID_WIDTH'(ny - {1'b0, bdim_c[1]}) : CTA_TID_WIDTH'(ny);
+            assign tid_c[j][2] = tid_c[j-1][2] + CTA_TID_WIDTH'(wrap_y);
+        end
+
+        for (genvar k = HI; k < `VX_CFG_NUM_THREADS; ++k) begin : g_cta_tid_pad
+            assign tid_c[k] = '0;
+        end
+
+        always @(posedge clk) begin
+            if (reset) begin
+                cta_tid_pipe_vld[s] <= 1'b0;
+            end else begin
+                cta_tid_pipe_vld[s] <= (s == 0) ? cta_fire : cta_tid_pipe_vld[s-1];
+            end
+            cta_tid_pipe_wad[s]        <= (s == 0) ? cta_wid : cta_tid_pipe_wad[s-1];
+            cta_tid_pipe_bdim[s]       <= bdim_c;
+            cta_tid_pipe_q[s].cta_rank <= (s == 0) ? cta_csrs.cta_rank : cta_tid_pipe_q[s-1].cta_rank;
+            cta_tid_pipe_q[s].cta_tid  <= tid_c;
+        end
     end
-    assign cta_warp_wdata.cta_tid = cta_tid_w;
+
+    assign cta_warp_write = cta_tid_pipe_vld[CTA_TID_NSTG-1];
+    assign cta_warp_waddr = cta_tid_pipe_wad[CTA_TID_NSTG-1];
+    assign cta_warp_wdata = cta_tid_pipe_q[CTA_TID_NSTG-1];
 
     assign cta_ctx_write = cta_fire;
     assign cta_ctx_waddr = cta_csrs.cta_id;
