@@ -103,6 +103,35 @@ module VX_tcu_fedp_tfr import VX_tcu_pkg::*; #(
     wire [7:0] cval_top = c_val[31:24];
     wire [6:0] cval_hi = cval_top[7:1] + 7'(cval_top[0]);
 
+    // is_int and cval_hi are combinational off this module's RAW fmt_s / c_val,
+    // but they are bundled into pipe_mul alongside mul_stage's outputs, which
+    // are MUL_LATENCY cycles late. Without this delay the bundle pairs
+    // operation n's control with operation (n-MUL_LATENCY)'s data. fmt_s is
+    // constant across a GEMM so is_int survives the skew, but c_val changes
+    // every operation and cval_hi is the INTEGER high-bit correction -- that is
+    // what corrupts (low bits right, high bits garbage / fp32 qNaN patterns).
+    //
+    // The delay is MUL_LATENCY-1, NOT MUL_LATENCY: VX_tcu_tfr_mul pipelines its
+    // own outputs with DEPTH(LATENCY-1), so mul_raw_sigs / mul_max_exp /
+    // mul_shift_amts land MUL_LATENCY-1 cycles after the inputs. At
+    // MUL_LATENCY==1 that is 0 and the original undelayed code happened to be
+    // correct -- which is exactly why simulation never caught this.
+    // LATENCY_TCU is 4 for the simulation default and ASIC but 5 for VIVADO
+    // and QUARTUS (VX_platform.vh), making MUL_LATENCY 2 and the skew 1 on
+    // FPGA only. Reproduce in sim by adding -DVIVADO to CONFIGS.
+    wire                s0_is_int;
+    wire [C_HI_W-1:0]   s0_cval_hi;
+    VX_pipe_register #(
+        .DATAW (1 + C_HI_W),
+        .DEPTH (MUL_LATENCY - 1)
+    ) pipe_cctl (
+        .clk      (clk),
+        .reset    (reset),
+        .enable   (enable),
+        .data_in  ({is_int,    cval_hi}),
+        .data_out ({s0_is_int, s0_cval_hi})
+    );
+
     VX_tcu_tfr_mul #(
         .N (N),
         .W (W),
@@ -152,7 +181,7 @@ module VX_tcu_fedp_tfr import VX_tcu_pkg::*; #(
         .reset(reset),
         .enable(enable),
         .lane_mask (mul_lane_mask),
-        .shared_data_in ({mul_max_exp, mul_shift_amts, mul_exception, mul_lane_mask, mul_raw_sigs[TCK], cval_hi, is_int}),
+        .shared_data_in ({mul_max_exp, mul_shift_amts, mul_exception, mul_lane_mask, mul_raw_sigs[TCK], s0_cval_hi, s0_is_int}),
         .shared_data_out({s1_max_exp,  s1_shift_amts,  s1_exception,  s1_lane_mask,  s1_raw_sig[TCK],  s1_cval_hi, s1_is_int}),
         .lane_data_in (pipe_mul_lane_din),
         .lane_data_out(pipe_mul_lane_dout)
