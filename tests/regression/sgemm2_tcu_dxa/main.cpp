@@ -498,7 +498,7 @@ kernel_arg_t kernel_arg = {};
 
 static void show_usage() {
   std::cout << "Vortex Sgemm2 TCU Test." << std::endl;
-  std::cout << "Usage: [-m: M] [-n: N] [-k: K] [-w: warps] [-h: help]" << std::endl;
+  std::cout << "Usage: [-m: M] [-n: N] [-k: K] [-w: warps] [-h: help]  (chunk depth is -DCHUNK_K=, compile-time)" << std::endl;
 }
 
 static void parse_args(int argc, char **argv) {
@@ -610,6 +610,19 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 
+  // chunk_K: how much of K is staged into LMEM per DXA round trip. Larger =
+  // fewer HBM round trips (the loop is latency bound, not bandwidth bound).
+  // Must match the kernel's compile-time kChunkK (same -DCHUNK_K in CONFIGS).
+#ifndef CHUNK_K
+#define CHUNK_K 0
+#endif
+  uint32_t chunk_K = (CHUNK_K == 0) ? cfg::tileK : (uint32_t)CHUNK_K;
+  if ((chunk_K % cfg::tileK) != 0 || (K % chunk_K) != 0) {
+    std::cout << "Error: chunk_K (" << chunk_K << ") must be a multiple of tileK="
+              << cfg::tileK << " and divide K=" << K << "!" << std::endl;
+    return -1;
+  }
+
   size_t sizeA = M * K;
   size_t sizeB = K * N;
   size_t sizeC = M * N;
@@ -621,6 +634,9 @@ int main(int argc, char *argv[]) {
   std::cout << "WMMA Core Dimension: M=" << cfg::tcM << ", N=" << cfg::tcN << ", K=" << cfg::tcK << std::endl;
   std::cout << "WMMA Per-Warp Tile: M=" << cfg::tileM << ", N=" << cfg::tileN << ", K=" << cfg::tileK << std::endl;
   std::cout << "WMMA CTA Tile: M=" << cta_M << ", N=" << cfg::tileN << ", K=" << cfg::tileK << std::endl;
+  std::cout << "chunk_K (K staged per DXA round trip): " << chunk_K
+            << "  -> " << (K / chunk_K) << " DMA pair(s) per CTA, smem "
+            << ((cta_M * chunk_K + chunk_K * cfg::tileN) * sizeof(itype_t)) << " B" << std::endl;
   std::cout << "Grid dimension: " << grid_dim[0] << "x" << grid_dim[1] << std::endl;
   std::cout << "Block dimension: " << block_dim[0] << "x" << block_dim[1] << std::endl;
   std::cout << "matrix A: " << M << "x" << K << std::endl;
@@ -680,20 +696,28 @@ int main(int argc, char *argv[]) {
   RT_CHECK(vortex::dxa::program_2d(device, kDescA, kernel_arg.A_addr,
     /*size0=*/K, /*size1=*/M,
     /*stride0_bytes=*/K * sizeof(itype_t),
-    /*tile0=*/cfg::tileK, /*tile1=*/cta_M,
+    /*tile0=*/chunk_K, /*tile1=*/cta_M,
     /*elem_bytes=*/sizeof(itype_t)));
 
   RT_CHECK(vortex::dxa::program_2d(device, kDescB, kernel_arg.B_addr,
     /*size0=*/K, /*size1=*/N,
     /*stride0_bytes=*/K * sizeof(itype_t),
-    /*tile0=*/cfg::tileK, /*tile1=*/cfg::tileN,
+    /*tile0=*/chunk_K, /*tile1=*/cfg::tileN,
     /*elem_bytes=*/sizeof(itype_t)));
 
   std::cout << "load kernel module" << std::endl;
   RT_CHECK(vx_module_load_file(device, kernel_file, &module_));
   RT_CHECK(vx_module_get_kernel(module_, "main", &kernel));
 
-  uint32_t smem_size = (cta_M * cfg::tileK + cfg::tileK * cfg::tileN) * sizeof(itype_t);
+  uint32_t smem_size = (cta_M * chunk_K + chunk_K * cfg::tileN) * sizeof(itype_t);
+  {
+    uint64_t lmem_cap = 1ull << VX_CFG_LMEM_LOG_SIZE;
+    if (smem_size > lmem_cap) {
+      std::cout << "Error: smem_size (" << smem_size << ") exceeds LMEM ("
+                << lmem_cap << "); lower -DCHUNK_K." << std::endl;
+      return -1;
+    }
+  }
 
   // Host result buffer — must outlive the async read enqueued below.
   std::vector<otype_t> h_C(sizeC);
