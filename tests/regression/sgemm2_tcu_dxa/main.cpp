@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cmath>
 #include <iostream>
+#include <cstdlib>
 #include <rvfloats.h>
 #include <string.h>
 #include <tensor_cfg.h>
@@ -625,14 +626,17 @@ int main(int argc, char *argv[]) {
   // fewer HBM round trips (the loop is latency bound, not bandwidth bound).
   // Must match the kernel's compile-time kChunkK (same -DCHUNK_K in CONFIGS).
 #ifndef CHUNK_K
-#define CHUNK_K 0
+#define CHUNK_K 0            // 0 => 2 * tileK; must match kernel.cpp's kChunkK
 #endif
-  uint32_t chunk_K = (CHUNK_K == 0) ? cfg::tileK : (uint32_t)CHUNK_K;
+  uint32_t chunk_K = (CHUNK_K == 0) ? (2 * cfg::tileK) : (uint32_t)CHUNK_K;
   if ((chunk_K % cfg::tileK) != 0 || (K % chunk_K) != 0) {
     std::cout << "Error: chunk_K (" << chunk_K << ") must be a multiple of tileK="
               << cfg::tileK << " and divide K=" << K << "!" << std::endl;
     return -1;
   }
+
+  uint32_t smem_buffer_size = (cta_M * chunk_K + chunk_K * cfg::tileN) * sizeof(itype_t);
+  uint32_t smem_size = 2 * smem_buffer_size;
 
   size_t sizeA = M * K;
   size_t sizeB = K * N;
@@ -647,7 +651,7 @@ int main(int argc, char *argv[]) {
   std::cout << "WMMA CTA Tile: M=" << cta_M << ", N=" << cfg::tileN << ", K=" << cfg::tileK << std::endl;
   std::cout << "chunk_K (K staged per DXA round trip): " << chunk_K
             << "  -> " << (K / chunk_K) << " DMA pair(s) per CTA, smem "
-            << ((cta_M * chunk_K + chunk_K * cfg::tileN) * sizeof(itype_t)) << " B" << std::endl;
+            << smem_buffer_size << " B per slot, " << smem_size << " B total" << std::endl;
   std::cout << "Grid dimension: " << grid_dim[0] << "x" << grid_dim[1] << std::endl;
   std::cout << "Block dimension: " << block_dim[0] << "x" << block_dim[1] << std::endl;
   std::cout << "matrix A: " << M << "x" << K << std::endl;
@@ -720,7 +724,6 @@ int main(int argc, char *argv[]) {
   RT_CHECK(vx_module_load_file(device, kernel_file, &module_));
   RT_CHECK(vx_module_get_kernel(module_, "main", &kernel));
 
-  uint32_t smem_size = (cta_M * chunk_K + chunk_K * cfg::tileN) * sizeof(itype_t);
   {
     uint64_t lmem_cap = 1ull << VX_CFG_LMEM_LOG_SIZE;
     if (smem_size > lmem_cap) {
@@ -765,9 +768,16 @@ int main(int argc, char *argv[]) {
   double elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(time_end - time_start).count();
   printf("Elapsed time: %lg ms\n", elapsed);
 
-  std::cout << "verify result" << std::endl;
+  // matmul_cpu is a naive M*N*K triple loop, so verification costs the same
+  // arithmetic the accelerator just did -- on the FLUX shapes (up to 2.2e11
+  // MACs) that is hours per invocation on the host. SGEMM_SKIP_VERIFY=1 drops
+  // it for timing sweeps ONLY; the device cycles reported above are unaffected.
+  const bool skip_verify = (getenv("SGEMM_SKIP_VERIFY") != nullptr);
   int errors = 0;
-  {
+  if (skip_verify) {
+    std::cout << "verify result: SKIPPED (SGEMM_SKIP_VERIFY set) -- timing only" << std::endl;
+  } else {
+    std::cout << "verify result" << std::endl;
     std::vector<otype_t> h_ref(sizeC);
     matmul_cpu(h_ref.data(), h_A.data(), h_B.data(), M, N, K);
 
