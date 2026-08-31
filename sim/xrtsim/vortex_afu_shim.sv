@@ -20,14 +20,22 @@ module vortex_afu_shim #(
 	parameter C_M_AXI_MEM_ID_WIDTH 	  = `PLATFORM_MEMORY_ID_WIDTH,
 	parameter C_M_AXI_MEM_DATA_WIDTH  = (`VX_CFG_PLATFORM_MEMORY_DATA_SIZE * 8),
 	parameter C_M_AXI_MEM_ADDR_WIDTH  = 64,
+`ifdef PLATFORM_MERGED_MEMORY_INTERFACE
+    parameter C_M_AXI_MEM_NUM_BANKS   = `PLATFORM_MEMORY_MERGED_PORTS
+`else
     parameter C_M_AXI_MEM_NUM_BANKS   = `VX_CFG_PLATFORM_MEMORY_NUM_BANKS
+`endif
 ) (
 	// System signals
 	input wire 									ap_clk,
 	input wire 									ap_rst_n,
 
     // AXI4 master interface
+`ifdef PLATFORM_MERGED_MEMORY_INTERFACE
+    `MP_REPEAT (`PLATFORM_MEMORY_MERGED_PORTS, GEN_AXI_MEM, MP_COMMA),
+`else
     `MP_REPEAT (`VX_CFG_PLATFORM_MEMORY_NUM_BANKS, GEN_AXI_MEM, MP_COMMA),
+`endif
 
     // AXI4 host-memory master interface (CP command ring + host side of DMA)
     `GEN_AXI_HOST,
@@ -65,7 +73,11 @@ module vortex_afu_shim #(
 		.clk             	(ap_clk),
 		.reset           	(~ap_rst_n),
 
+	`ifdef PLATFORM_MERGED_MEMORY_INTERFACE
+		`MP_REPEAT (`PLATFORM_MEMORY_MERGED_PORTS, AXI_MEM_ARGS, MP_COMMA),
+	`else
 		`MP_REPEAT (`VX_CFG_PLATFORM_MEMORY_NUM_BANKS, AXI_MEM_ARGS, MP_COMMA),
+	`endif
 
 		`AXI_HOST_ARGS,
 

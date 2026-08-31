@@ -269,6 +269,14 @@ module VX_cache_bank import VX_gpu_pkg::*; #(
     // Also catch a same-line request that was just admitted and is
     // allocating its MSHR entry at S0 this cycle — it is not yet visible
     // to the MSHR probe (a 1-cycle window between admit and allocate).
+    // Driven further down the pipeline but consumed above it. Declared here so
+    // the uses are legal: a forward reference is illegal SV (IEEE 1800 6.18)
+    // even where a tolerant tool resolves it.
+    wire mshr_allocate_st0;
+    wire eff_hit_st1;
+    reg  amo_wb_pending;
+    wire is_amo_fwd_st1;     // AMO first pass at a non-LLC bank (st1)
+
     wire amo_cfg = (AMO_ENABLE != 0) && (IS_LLC == 0);
     wire st0_alloc_same_line = mshr_allocate_st0 && ~pipe_stall && (addr_st0 == core_req_addr);
     wire st0_ld_alloc  = st0_alloc_same_line && ~amo_st0.amo_valid && ~rw_st0;
@@ -361,7 +369,6 @@ module VX_cache_bank import VX_gpu_pkg::*; #(
     // flows through st0/st1 normally. The bank stalls accepting new
     // core_req during the writeback (1-2 cycles) so wb commits before
     // the next AMO can race.
-    reg                              amo_wb_pending;
     reg [`CS_LINE_ADDR_WIDTH-1:0]    amo_wb_addr_r;
     reg [WORD_SEL_WIDTH-1:0]         amo_wb_word_idx_r;
     reg [WORD_SIZE-1:0]              amo_wb_byteen_r;
@@ -629,7 +636,7 @@ module VX_cache_bank import VX_gpu_pkg::*; #(
     );
 
     // only allocate MSHR entries for non-replay core requests
-    wire mshr_allocate_st0 = valid_st0 && is_creq_st0 && ~is_replay_st0;
+    assign mshr_allocate_st0 = valid_st0 && is_creq_st0 && ~is_replay_st0;
     wire mshr_finalize_st1 = valid_st1 && is_creq_st1 && ~is_replay_st1;
 
     // release allocated mshr entry if we had a hit
@@ -740,7 +747,6 @@ module VX_cache_bank import VX_gpu_pkg::*; #(
     //      word, not a cacheable line), and
     //   3) the replay emits the latched result word as the core response.
     wire is_amo_fwd_st0;     // AMO first pass at a non-LLC bank (st0)
-    wire is_amo_fwd_st1;     // AMO first pass at a non-LLC bank (st1)
     wire is_amo_replay_st1;  // replay of a forwarded AMO (carries result)
     wire is_passthru_fill_sel;   // incoming fill targets a passthru entry
     wire [`CS_WORD_WIDTH-1:0] amo_ptw_word_st1; // latched result word @ st1
@@ -790,7 +796,7 @@ module VX_cache_bank import VX_gpu_pkg::*; #(
 
     // Passthru replay is treated as a hit (its line was never installed):
     // fires the core response, allocates no mreq, releases the MSHR entry.
-    wire eff_hit_st1 = is_hit_st1 || is_amo_replay_st1;
+    assign eff_hit_st1 = is_hit_st1 || is_amo_replay_st1;
 
     // ============================================================
     // AMO commit path

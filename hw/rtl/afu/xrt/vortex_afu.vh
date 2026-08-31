@@ -22,6 +22,16 @@
 `define PLATFORM_MEMORY_ID_WIDTH 32
 `endif
 
+// Top-level m_axi_mem_* masters the merged memory interface presents. Must stay
+// a literal: it feeds MP_REPEAT, whose `_MP_REPEAT_``n paste survives only one
+// level of macro substitution in the count argument.
+// VX_axi_adapter leaves the master index inside the emitted address, so every
+// master drives the full device address range and must be mapped to the whole
+// memory aperture, never to a per-master slice.
+`ifndef PLATFORM_MEMORY_MERGED_PORTS
+`define PLATFORM_MEMORY_MERGED_PORTS 1
+`endif
+
 `define GEN_AXI_MEM(i) \
 	output wire                                 m_axi_mem_``i``_awvalid, \
 	input  wire                                 m_axi_mem_``i``_awready, \

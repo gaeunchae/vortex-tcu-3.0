@@ -29,7 +29,12 @@ module VX_dxa_gmem_req import VX_gpu_pkg::*, VX_dxa_pkg::*; #(
     parameter GMEM_ADDR_WIDTH = `VX_CFG_MEM_ADDR_WIDTH - `CLOG2(`VX_CFG_L1_LINE_SIZE),
     parameter GMEM_TAG_WIDTH  = L1_MEM_ARB_TAG_WIDTH,
     parameter CL_OFF_BITS     = `CLOG2(`VX_CFG_L1_LINE_SIZE),
-    parameter SMEM_ADDR_W     = DXA_SMEM_ADDR_W
+    parameter SMEM_ADDR_W     = DXA_SMEM_ADDR_W,
+    // Used by the port list below (see VX_dxa_addr_gen for why).
+    localparam TAG_W          = `CLOG2(MAX_OUTSTANDING),
+    localparam SEQ_W          = `CLOG2(MAX_OUTSTANDING + 1),
+    localparam GMEM_BYTES     = 2**CL_OFF_BITS,
+    localparam GMEM_DATAW     = GMEM_BYTES * 8
 ) (
     input  wire                        clk,
     input  wire                        reset,
@@ -77,10 +82,6 @@ module VX_dxa_gmem_req import VX_gpu_pkg::*, VX_dxa_pkg::*; #(
     output wire [31:0]                 perf_gmem_span_cycles
 `endif
 );
-    localparam TAG_W = `CLOG2(MAX_OUTSTANDING);
-    localparam SEQ_W = `CLOG2(MAX_OUTSTANDING + 1);
-    localparam GMEM_BYTES = 2**CL_OFF_BITS;
-    localparam GMEM_DATAW = GMEM_BYTES * 8;
     localparam GMEM_TAG_VALUEW = GMEM_TAG_WIDTH - UUID_WIDTH;
 
     `STATIC_ASSERT(GMEM_TAG_VALUEW >= TAG_W, ("gmem tag too narrow for slot encoding"))

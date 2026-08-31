@@ -22,6 +22,11 @@ ifeq ($(TARGET), xrtsim)
 	XRTSIM = $(DESTDIR)/libxrtsim.so
 	CXXFLAGS += -DXRTSIM -I$(SIM_DIR)/xrtsim
 	LDFLAGS += -L$(DESTDIR) -lxrtsim
+else ifeq ($(TARGET), xrtsim_vcs)
+	# Same vortex::xrt_sim surface as xrtsim, backed by a VCS simv over sockets.
+	XRTSIM = $(DESTDIR)/libxrtsim_vcs.so
+	CXXFLAGS += -DXRTSIM -I$(SIM_DIR)/xrtsim
+	LDFLAGS += -L$(DESTDIR) -lxrtsim_vcs
 else
 	LDFLAGS += -luuid -lxrt_coreutil
 endif
@@ -54,6 +59,9 @@ driver: $(DESTDIR)/libxrtsim.so
 
 $(DESTDIR)/libxrtsim.so: force
 	DESTDIR=$(DESTDIR) $(MAKE) -C $(ROOT_DIR)/sim/xrtsim $(DESTDIR)/libxrtsim.so
+
+$(DESTDIR)/libxrtsim_vcs.so: force
+	DESTDIR=$(DESTDIR) $(MAKE) -C $(ROOT_DIR)/sim/xrtsim_vcs $(DESTDIR)/libxrtsim_vcs.so
 
 $(DESTDIR)/$(PROJECT): $(SRCS) $(XRTSIM) $(CONFIG_FILE)
 	$(CXX) $(CXXFLAGS) $(SRCS) $(LDFLAGS) -o $@

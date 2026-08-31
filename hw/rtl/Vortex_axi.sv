@@ -196,6 +196,15 @@ module Vortex_axi import VX_gpu_pkg::*; #(
         );
     end
 
+    // Each AXI port covers a contiguous run of platform memory banks (e.g. one
+    // HBM pseudo-channel group per port). Off by default: ports then span the
+    // whole aperture and the platform must map each to all of it.
+`ifdef PLATFORM_MEMORY_BANK_CONTIGUOUS
+    localparam AXI_PORT_BANKS = `VX_CFG_PLATFORM_MEMORY_NUM_BANKS / AXI_NUM_BANKS;
+`else
+    localparam AXI_PORT_BANKS = 0;
+`endif
+
     VX_axi_adapter #(
         .DATA_WIDTH     (AXI_DATA_WIDTH),
         .ADDR_WIDTH_IN  (VX_MEM_ADDR_A_WIDTH),
@@ -205,6 +214,8 @@ module Vortex_axi import VX_gpu_pkg::*; #(
         .NUM_PORTS_IN   (VX_MEM_PORTS),
         .NUM_BANKS_OUT  (AXI_NUM_BANKS),
         .INTERLEAVE     (`VX_CFG_PLATFORM_MEMORY_INTERLEAVE),
+        .PORT_BANKS     (AXI_PORT_BANKS),
+        .PORT_ADDR_WIDTH (`VX_CFG_PLATFORM_MEMORY_ADDR_WIDTH),
         .REQ_OUT_BUF    ((VX_MEM_PORTS > 1) ? 2 : 0),
         .RSP_OUT_BUF    ((VX_MEM_PORTS > 1 || AXI_NUM_BANKS > 1) ? 2 : 0)
     ) axi_adapter (

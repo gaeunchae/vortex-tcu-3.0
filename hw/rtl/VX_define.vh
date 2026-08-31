@@ -248,7 +248,7 @@
         .OUT_W (__outw), \
         .N     (__n), \
         .OP    ("__op") \
-    ) reduce`__LINE__ ( \
+    ) `UNIQUE_NAME(reduce, `__LINE__) ( \
         .data_in(__in), \
         .data_out(__out) \
     )
@@ -257,7 +257,7 @@
     VX_popcount #( \
         .N ($bits(in)), \
         .MODEL (model) \
-    ) __pop_count_ex`__LINE__ ( \
+    ) `UNIQUE_NAME(__pop_count_ex, `__LINE__) ( \
         .data_in  (in), \
         .data_out (out) \
     )
@@ -280,7 +280,7 @@
         .DATAW  ($bits(dst)), \
         .RESETW (resetw), \
         .DEPTH  (latency) \
-    ) __buffer_ex`__LINE__ ( \
+    ) `UNIQUE_NAME(__buffer_ex, `__LINE__) ( \
         .clk      (clk), \
         .reset    (reset), \
         .enable   (ena), \
@@ -294,7 +294,7 @@
     VX_edge_trigger #( \
         .POS  (0), \
         .INIT (0) \
-    ) __neg_edge`__LINE__ ( \
+    ) `UNIQUE_NAME(__neg_edge, `__LINE__) ( \
         .clk      (clk), \
         .reset    (1'b0), \
         .data_in  (src), \

@@ -20,6 +20,13 @@ package VX_trace_pkg;
 
 `ifdef SIMULATION
 
+    // `TRACE expands to dpi_trace. A package does not inherit $unit-scope
+    // imports, so declare it here rather than relying on dpi_util.vh — the
+    // same local-import pattern VX_mem_coalescer / VX_mem_scheduler use.
+`ifdef SV_DPI
+    import "DPI-C" function void dpi_trace(input int level, input string format /*verilator sformat*/);
+`endif
+
     import VX_gpu_pkg::*;
 
     task trace_reg_idx(input int level, input logic [NUM_REGS_BITS-1:0] reg_id);

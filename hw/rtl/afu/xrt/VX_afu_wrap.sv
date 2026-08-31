@@ -43,7 +43,7 @@ module VX_afu_wrap import VX_gpu_pkg::*; #(
 	parameter C_M_AXI_MEM_DATA_WIDTH  = `VX_CFG_PLATFORM_MEMORY_DATA_SIZE * 8,
 	parameter C_M_AXI_MEM_ADDR_WIDTH  = 64,
 `ifdef PLATFORM_MERGED_MEMORY_INTERFACE
-	parameter C_M_AXI_MEM_NUM_BANKS   = 1
+	parameter C_M_AXI_MEM_NUM_BANKS   = `PLATFORM_MEMORY_MERGED_PORTS
 `else
 	parameter C_M_AXI_MEM_NUM_BANKS   = `VX_CFG_PLATFORM_MEMORY_NUM_BANKS
 `endif
@@ -54,7 +54,7 @@ module VX_afu_wrap import VX_gpu_pkg::*; #(
 
     // AXI4 master interface
 `ifdef PLATFORM_MERGED_MEMORY_INTERFACE
-	`MP_REPEAT (1, GEN_AXI_MEM, MP_COMMA),
+	`MP_REPEAT (`PLATFORM_MEMORY_MERGED_PORTS, GEN_AXI_MEM, MP_COMMA),
 `else
 	`MP_REPEAT (`VX_CFG_PLATFORM_MEMORY_NUM_BANKS, GEN_AXI_MEM, MP_COMMA),
 `endif
@@ -119,7 +119,7 @@ module VX_afu_wrap import VX_gpu_pkg::*; #(
 
 	// convert memory interface to array
 `ifdef PLATFORM_MERGED_MEMORY_INTERFACE
-	`MP_REPEAT (1, AXI_MEM_TO_ARRAY, MP_SEMI);
+	`MP_REPEAT (`PLATFORM_MEMORY_MERGED_PORTS, AXI_MEM_TO_ARRAY, MP_SEMI);
 `else
 	`MP_REPEAT (`VX_CFG_PLATFORM_MEMORY_NUM_BANKS, AXI_MEM_TO_ARRAY, MP_SEMI);
 `endif
@@ -455,40 +455,16 @@ module VX_afu_wrap import VX_gpu_pkg::*; #(
 		.busy			(vx_busy)
 	);
 
-	// ---- Banks 1..N-1: direct passthrough ----
-	for (genvar i = 1; i < C_M_AXI_MEM_NUM_BANKS; ++i) begin : g_bank_passthrough
-		assign m_axi_mem_awvalid_a[i] = vx_awvalid_a[i];
-		assign m_axi_mem_awaddr_u[i]  = vx_awaddr_a[i];
-		assign m_axi_mem_awid_a[i]    = vx_awid_a[i];
-		assign m_axi_mem_awlen_a[i]   = vx_awlen_a[i];
-		assign vx_awready_a[i]        = m_axi_mem_awready_a[i];
+	// ---- CP device master: remap + per-port split, then a 2:1 arb per bank ----
+	// The CP must land on the SAME HBM layout as the cores' VX_axi_adapter.
+	// Under the flat layout VX_cp_axi_remap is a passthrough to port 0, so this
+	// reduces to the old "bank 0 shared, banks 1..N-1 passthrough" wiring.
+`ifdef PLATFORM_MEMORY_BANK_CONTIGUOUS
+	localparam CP_PORT_BANKS = `VX_CFG_PLATFORM_MEMORY_NUM_BANKS / C_M_AXI_MEM_NUM_BANKS;
+`else
+	localparam CP_PORT_BANKS = 0;
+`endif
 
-		assign m_axi_mem_wvalid_a[i]  = vx_wvalid_a[i];
-		assign m_axi_mem_wdata_a[i]   = vx_wdata_a[i];
-		assign m_axi_mem_wstrb_a[i]   = vx_wstrb_a[i];
-		assign m_axi_mem_wlast_a[i]   = vx_wlast_a[i];
-		assign vx_wready_a[i]         = m_axi_mem_wready_a[i];
-
-		assign vx_bvalid_a[i]         = m_axi_mem_bvalid_a[i];
-		assign vx_bid_a[i]            = m_axi_mem_bid_a[i];
-		assign vx_bresp_a[i]          = m_axi_mem_bresp_a[i];
-		assign m_axi_mem_bready_a[i]  = vx_bready_a[i];
-
-		assign m_axi_mem_arvalid_a[i] = vx_arvalid_a[i];
-		assign m_axi_mem_araddr_u[i]  = vx_araddr_a[i];
-		assign m_axi_mem_arid_a[i]    = vx_arid_a[i];
-		assign m_axi_mem_arlen_a[i]   = vx_arlen_a[i];
-		assign vx_arready_a[i]        = m_axi_mem_arready_a[i];
-
-		assign vx_rvalid_a[i]         = m_axi_mem_rvalid_a[i];
-		assign vx_rdata_a[i]          = m_axi_mem_rdata_a[i];
-		assign vx_rlast_a[i]          = m_axi_mem_rlast_a[i];
-		assign vx_rid_a[i]            = m_axi_mem_rid_a[i];
-		assign vx_rresp_a[i]          = m_axi_mem_rresp_a[i];
-		assign m_axi_mem_rready_a[i]  = vx_rready_a[i];
-	end
-
-	// ---- Bank 0: 2:1 arbiter merges Vortex bank-0 + CP axi_m ----
 	// Pad CP's narrower ID into the platform ID width so the arbiter sees
 	// identical signal widths from both sources.
 	wire [C_M_AXI_MEM_ID_WIDTH-1:0] cp_awid_padded =
@@ -496,70 +472,142 @@ module VX_afu_wrap import VX_gpu_pkg::*; #(
 	wire [C_M_AXI_MEM_ID_WIDTH-1:0] cp_arid_padded =
 	    {{(C_M_AXI_MEM_ID_WIDTH - `VX_CP_AXI_TID_WIDTH){1'b0}}, cp_axi_dev.arid};
 
-	// Drop the platform offset from the CP address so the arbiter's slave
-	// port sees an offset-relative bank-0 address (matches vx_awaddr_a[0]).
+	// Drop the platform offset so the remap and the arbiter see an
+	// offset-relative device address (matches vx_awaddr_a[*]); g_addressing
+	// adds it back at the top level.
 	wire [M_AXI_MEM_ADDR_WIDTH-1:0] cp_awaddr_offset =
 	    M_AXI_MEM_ADDR_WIDTH'(cp_axi_dev.awaddr - `PLATFORM_MEMORY_OFFSET);
 	wire [M_AXI_MEM_ADDR_WIDTH-1:0] cp_araddr_offset =
 	    M_AXI_MEM_ADDR_WIDTH'(cp_axi_dev.araddr - `PLATFORM_MEMORY_OFFSET);
 
-	VX_axi_arb2 #(
-		.ADDR_W (M_AXI_MEM_ADDR_WIDTH),
-		.DATA_W (C_M_AXI_MEM_DATA_WIDTH),
-		.ID_W   (C_M_AXI_MEM_ID_WIDTH)
-	) bank0_arb (
-		.clk        (clk),
-		.reset      (reset),
-
-		.s0_awvalid (vx_awvalid_a[0]),  .s0_awready (vx_awready_a[0]),
-		.s0_awaddr  (vx_awaddr_a[0]),   .s0_awid    (vx_awid_a[0]),
-		.s0_awlen   (vx_awlen_a[0]),
-		.s0_wvalid  (vx_wvalid_a[0]),   .s0_wready  (vx_wready_a[0]),
-		.s0_wdata   (vx_wdata_a[0]),    .s0_wstrb   (vx_wstrb_a[0]),
-		.s0_wlast   (vx_wlast_a[0]),
-		.s0_bvalid  (vx_bvalid_a[0]),   .s0_bready  (vx_bready_a[0]),
-		.s0_bid     (vx_bid_a[0]),      .s0_bresp   (vx_bresp_a[0]),
-		.s0_arvalid (vx_arvalid_a[0]),  .s0_arready (vx_arready_a[0]),
-		.s0_araddr  (vx_araddr_a[0]),   .s0_arid    (vx_arid_a[0]),
-		.s0_arlen   (vx_arlen_a[0]),
-		.s0_rvalid  (vx_rvalid_a[0]),   .s0_rready  (vx_rready_a[0]),
-		.s0_rdata   (vx_rdata_a[0]),    .s0_rlast   (vx_rlast_a[0]),
-		.s0_rid     (vx_rid_a[0]),      .s0_rresp   (vx_rresp_a[0]),
-
-		.s1_awvalid (cp_axi_dev.awvalid), .s1_awready (cp_axi_dev.awready),
-		.s1_awaddr  (cp_awaddr_offset), .s1_awid    (cp_awid_padded),
-		.s1_awlen   (cp_axi_dev.awlen),
-		.s1_wvalid  (cp_axi_dev.wvalid),  .s1_wready  (cp_axi_dev.wready),
-		.s1_wdata   (cp_axi_dev.wdata),   .s1_wstrb   (cp_axi_dev.wstrb),
-		.s1_wlast   (cp_axi_dev.wlast),
-		.s1_bvalid  (cp_axi_dev.bvalid),  .s1_bready  (cp_axi_dev.bready),
-		.s1_bid     (cp_axi_dev_bid_full),.s1_bresp   (cp_axi_dev.bresp),
-		.s1_arvalid (cp_axi_dev.arvalid), .s1_arready (cp_axi_dev.arready),
-		.s1_araddr  (cp_araddr_offset), .s1_arid    (cp_arid_padded),
-		.s1_arlen   (cp_axi_dev.arlen),
-		.s1_rvalid  (cp_axi_dev.rvalid),  .s1_rready  (cp_axi_dev.rready),
-		.s1_rdata   (cp_axi_dev.rdata),   .s1_rlast   (cp_axi_dev.rlast),
-		.s1_rid     (cp_axi_dev_rid_full),.s1_rresp   (cp_axi_dev.rresp),
-
-		.m_awvalid  (m_axi_mem_awvalid_a[0]), .m_awready (m_axi_mem_awready_a[0]),
-		.m_awaddr   (m_axi_mem_awaddr_u[0]),  .m_awid    (m_axi_mem_awid_a[0]),
-		.m_awlen    (m_axi_mem_awlen_a[0]),
-		.m_wvalid   (m_axi_mem_wvalid_a[0]),  .m_wready  (m_axi_mem_wready_a[0]),
-		.m_wdata    (m_axi_mem_wdata_a[0]),   .m_wstrb   (m_axi_mem_wstrb_a[0]),
-		.m_wlast    (m_axi_mem_wlast_a[0]),
-		.m_bvalid   (m_axi_mem_bvalid_a[0]),  .m_bready  (m_axi_mem_bready_a[0]),
-		.m_bid      (m_axi_mem_bid_a[0]),     .m_bresp   (m_axi_mem_bresp_a[0]),
-		.m_arvalid  (m_axi_mem_arvalid_a[0]), .m_arready (m_axi_mem_arready_a[0]),
-		.m_araddr   (m_axi_mem_araddr_u[0]),  .m_arid    (m_axi_mem_arid_a[0]),
-		.m_arlen    (m_axi_mem_arlen_a[0]),
-		.m_rvalid   (m_axi_mem_rvalid_a[0]),  .m_rready  (m_axi_mem_rready_a[0]),
-		.m_rdata    (m_axi_mem_rdata_a[0]),   .m_rlast   (m_axi_mem_rlast_a[0]),
-		.m_rid      (m_axi_mem_rid_a[0]),     .m_rresp   (m_axi_mem_rresp_a[0])
-	);
-
 	// Truncate the arbiter's wider ID back to CP's narrower native ID width.
 	wire [C_M_AXI_MEM_ID_WIDTH-1:0] cp_axi_dev_bid_full;
 	wire [C_M_AXI_MEM_ID_WIDTH-1:0] cp_axi_dev_rid_full;
+
+	wire                                     cpr_awvalid  [C_M_AXI_MEM_NUM_BANKS];
+	wire                                     cpr_awready  [C_M_AXI_MEM_NUM_BANKS];
+	wire [M_AXI_MEM_ADDR_WIDTH-1:0]          cpr_awaddr   [C_M_AXI_MEM_NUM_BANKS];
+	wire [C_M_AXI_MEM_ID_WIDTH-1:0]          cpr_awid     [C_M_AXI_MEM_NUM_BANKS];
+	wire [7:0]                               cpr_awlen    [C_M_AXI_MEM_NUM_BANKS];
+	wire                                     cpr_wvalid   [C_M_AXI_MEM_NUM_BANKS];
+	wire                                     cpr_wready   [C_M_AXI_MEM_NUM_BANKS];
+	wire [C_M_AXI_MEM_DATA_WIDTH-1:0]        cpr_wdata    [C_M_AXI_MEM_NUM_BANKS];
+	wire [C_M_AXI_MEM_DATA_WIDTH/8-1:0]      cpr_wstrb    [C_M_AXI_MEM_NUM_BANKS];
+	wire                                     cpr_wlast    [C_M_AXI_MEM_NUM_BANKS];
+	wire                                     cpr_bvalid   [C_M_AXI_MEM_NUM_BANKS];
+	wire                                     cpr_bready   [C_M_AXI_MEM_NUM_BANKS];
+	wire [C_M_AXI_MEM_ID_WIDTH-1:0]          cpr_bid      [C_M_AXI_MEM_NUM_BANKS];
+	wire [1:0]                               cpr_bresp    [C_M_AXI_MEM_NUM_BANKS];
+	wire                                     cpr_arvalid  [C_M_AXI_MEM_NUM_BANKS];
+	wire                                     cpr_arready  [C_M_AXI_MEM_NUM_BANKS];
+	wire [M_AXI_MEM_ADDR_WIDTH-1:0]          cpr_araddr   [C_M_AXI_MEM_NUM_BANKS];
+	wire [C_M_AXI_MEM_ID_WIDTH-1:0]          cpr_arid     [C_M_AXI_MEM_NUM_BANKS];
+	wire [7:0]                               cpr_arlen    [C_M_AXI_MEM_NUM_BANKS];
+	wire                                     cpr_rvalid   [C_M_AXI_MEM_NUM_BANKS];
+	wire                                     cpr_rready   [C_M_AXI_MEM_NUM_BANKS];
+	wire [C_M_AXI_MEM_DATA_WIDTH-1:0]        cpr_rdata    [C_M_AXI_MEM_NUM_BANKS];
+	wire                                     cpr_rlast    [C_M_AXI_MEM_NUM_BANKS];
+	wire [C_M_AXI_MEM_ID_WIDTH-1:0]          cpr_rid      [C_M_AXI_MEM_NUM_BANKS];
+	wire [1:0]                               cpr_rresp    [C_M_AXI_MEM_NUM_BANKS];
+
+	VX_cp_axi_remap #(
+		.ADDR_WIDTH      (M_AXI_MEM_ADDR_WIDTH),
+		.DATA_WIDTH      (C_M_AXI_MEM_DATA_WIDTH),
+		.ID_WIDTH        (C_M_AXI_MEM_ID_WIDTH),
+		.NUM_PORTS       (C_M_AXI_MEM_NUM_BANKS),
+		.PORT_BANKS      (CP_PORT_BANKS),
+		.PORT_ADDR_WIDTH (`VX_CFG_PLATFORM_MEMORY_ADDR_WIDTH)
+	) cp_remap (
+		.clk        (clk),
+		.reset      (reset),
+
+		.s_awvalid  (cp_axi_dev.awvalid), .s_awready (cp_axi_dev.awready),
+		.s_awaddr   (cp_awaddr_offset),   .s_awid    (cp_awid_padded),
+		.s_awlen    (cp_axi_dev.awlen),
+		.s_wvalid   (cp_axi_dev.wvalid),  .s_wready  (cp_axi_dev.wready),
+		.s_wdata    (cp_axi_dev.wdata),   .s_wstrb   (cp_axi_dev.wstrb),
+		.s_wlast    (cp_axi_dev.wlast),
+		.s_bvalid   (cp_axi_dev.bvalid),  .s_bready  (cp_axi_dev.bready),
+		.s_bid      (cp_axi_dev_bid_full),.s_bresp   (cp_axi_dev.bresp),
+		.s_arvalid  (cp_axi_dev.arvalid), .s_arready (cp_axi_dev.arready),
+		.s_araddr   (cp_araddr_offset),   .s_arid    (cp_arid_padded),
+		.s_arlen    (cp_axi_dev.arlen),
+		.s_rvalid   (cp_axi_dev.rvalid),  .s_rready  (cp_axi_dev.rready),
+		.s_rdata    (cp_axi_dev.rdata),   .s_rlast   (cp_axi_dev.rlast),
+		.s_rid      (cp_axi_dev_rid_full),.s_rresp   (cp_axi_dev.rresp),
+
+		.m_awvalid  (cpr_awvalid), .m_awready (cpr_awready),
+		.m_awaddr   (cpr_awaddr),  .m_awid    (cpr_awid),
+		.m_awlen    (cpr_awlen),
+		.m_wvalid   (cpr_wvalid),  .m_wready  (cpr_wready),
+		.m_wdata    (cpr_wdata),   .m_wstrb   (cpr_wstrb),
+		.m_wlast    (cpr_wlast),
+		.m_bvalid   (cpr_bvalid),  .m_bready  (cpr_bready),
+		.m_bid      (cpr_bid),     .m_bresp   (cpr_bresp),
+		.m_arvalid  (cpr_arvalid), .m_arready (cpr_arready),
+		.m_araddr   (cpr_araddr),  .m_arid    (cpr_arid),
+		.m_arlen    (cpr_arlen),
+		.m_rvalid   (cpr_rvalid),  .m_rready  (cpr_rready),
+		.m_rdata    (cpr_rdata),   .m_rlast   (cpr_rlast),
+		.m_rid      (cpr_rid),     .m_rresp   (cpr_rresp)
+	);
+
+	for (genvar i = 0; i < C_M_AXI_MEM_NUM_BANKS; ++i) begin : g_bank_arb
+		VX_axi_arb2 #(
+			.ADDR_W (M_AXI_MEM_ADDR_WIDTH),
+			.DATA_W (C_M_AXI_MEM_DATA_WIDTH),
+			.ID_W   (C_M_AXI_MEM_ID_WIDTH)
+		) bank_arb (
+			.clk        (clk),
+			.reset      (reset),
+
+			.s0_awvalid (vx_awvalid_a[i]),  .s0_awready (vx_awready_a[i]),
+			.s0_awaddr  (vx_awaddr_a[i]),   .s0_awid    (vx_awid_a[i]),
+			.s0_awlen   (vx_awlen_a[i]),
+			.s0_wvalid  (vx_wvalid_a[i]),   .s0_wready  (vx_wready_a[i]),
+			.s0_wdata   (vx_wdata_a[i]),    .s0_wstrb   (vx_wstrb_a[i]),
+			.s0_wlast   (vx_wlast_a[i]),
+			.s0_bvalid  (vx_bvalid_a[i]),   .s0_bready  (vx_bready_a[i]),
+			.s0_bid     (vx_bid_a[i]),      .s0_bresp   (vx_bresp_a[i]),
+			.s0_arvalid (vx_arvalid_a[i]),  .s0_arready (vx_arready_a[i]),
+			.s0_araddr  (vx_araddr_a[i]),   .s0_arid    (vx_arid_a[i]),
+			.s0_arlen   (vx_arlen_a[i]),
+			.s0_rvalid  (vx_rvalid_a[i]),   .s0_rready  (vx_rready_a[i]),
+			.s0_rdata   (vx_rdata_a[i]),    .s0_rlast   (vx_rlast_a[i]),
+			.s0_rid     (vx_rid_a[i]),      .s0_rresp   (vx_rresp_a[i]),
+
+			.s1_awvalid (cpr_awvalid[i]),   .s1_awready (cpr_awready[i]),
+			.s1_awaddr  (cpr_awaddr[i]),    .s1_awid    (cpr_awid[i]),
+			.s1_awlen   (cpr_awlen[i]),
+			.s1_wvalid  (cpr_wvalid[i]),    .s1_wready  (cpr_wready[i]),
+			.s1_wdata   (cpr_wdata[i]),     .s1_wstrb   (cpr_wstrb[i]),
+			.s1_wlast   (cpr_wlast[i]),
+			.s1_bvalid  (cpr_bvalid[i]),    .s1_bready  (cpr_bready[i]),
+			.s1_bid     (cpr_bid[i]),       .s1_bresp   (cpr_bresp[i]),
+			.s1_arvalid (cpr_arvalid[i]),   .s1_arready (cpr_arready[i]),
+			.s1_araddr  (cpr_araddr[i]),    .s1_arid    (cpr_arid[i]),
+			.s1_arlen   (cpr_arlen[i]),
+			.s1_rvalid  (cpr_rvalid[i]),    .s1_rready  (cpr_rready[i]),
+			.s1_rdata   (cpr_rdata[i]),     .s1_rlast   (cpr_rlast[i]),
+			.s1_rid     (cpr_rid[i]),       .s1_rresp   (cpr_rresp[i]),
+
+			.m_awvalid  (m_axi_mem_awvalid_a[i]), .m_awready (m_axi_mem_awready_a[i]),
+			.m_awaddr   (m_axi_mem_awaddr_u[i]),  .m_awid    (m_axi_mem_awid_a[i]),
+			.m_awlen    (m_axi_mem_awlen_a[i]),
+			.m_wvalid   (m_axi_mem_wvalid_a[i]),  .m_wready  (m_axi_mem_wready_a[i]),
+			.m_wdata    (m_axi_mem_wdata_a[i]),   .m_wstrb   (m_axi_mem_wstrb_a[i]),
+			.m_wlast    (m_axi_mem_wlast_a[i]),
+			.m_bvalid   (m_axi_mem_bvalid_a[i]),  .m_bready  (m_axi_mem_bready_a[i]),
+			.m_bid      (m_axi_mem_bid_a[i]),     .m_bresp   (m_axi_mem_bresp_a[i]),
+			.m_arvalid  (m_axi_mem_arvalid_a[i]), .m_arready (m_axi_mem_arready_a[i]),
+			.m_araddr   (m_axi_mem_araddr_u[i]),  .m_arid    (m_axi_mem_arid_a[i]),
+			.m_arlen    (m_axi_mem_arlen_a[i]),
+			.m_rvalid   (m_axi_mem_rvalid_a[i]),  .m_rready  (m_axi_mem_rready_a[i]),
+			.m_rdata    (m_axi_mem_rdata_a[i]),   .m_rlast   (m_axi_mem_rlast_a[i]),
+			.m_rid      (m_axi_mem_rid_a[i]),     .m_rresp   (m_axi_mem_rresp_a[i])
+		);
+	end
+
 	assign cp_axi_dev.bid = cp_axi_dev_bid_full[`VX_CP_AXI_TID_WIDTH-1:0];
 	assign cp_axi_dev.rid = cp_axi_dev_rid_full[`VX_CP_AXI_TID_WIDTH-1:0];
 	`UNUSED_VAR (cp_axi_dev_bid_full)

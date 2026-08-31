@@ -103,6 +103,17 @@ bool sim_trace_enabled() {
 
 ///////////////////////////////////////////////////////////////////////////////
 
+// mem_bank_size_ / mem_alloc_ below give every AXI master its own address
+// space, so this model only covers the one-master-per-bank layout. Merging
+// banks behind fewer masters needs a shared-address-space model here first.
+#ifdef PLATFORM_MERGED_MEMORY_INTERFACE
+  #ifndef PLATFORM_MEMORY_MERGED_PORTS
+    #define PLATFORM_MEMORY_MERGED_PORTS 1
+  #endif
+  static_assert(PLATFORM_MEMORY_MERGED_PORTS == VX_CFG_PLATFORM_MEMORY_NUM_BANKS,
+                "xrtsim does not model a merged memory interface");
+#endif
+
 #define MP_M_AXI_MEM_EACH(i) \
   m_axi_mem_[i].awvalid = &device_->m_axi_mem_##i##_awvalid; \
   m_axi_mem_[i].awready = &device_->m_axi_mem_##i##_awready; \

@@ -23,6 +23,14 @@ module VX_axi_adapter #(
     parameter NUM_PORTS_IN   = 1,
     parameter NUM_BANKS_OUT  = 1,
     parameter INTERLEAVE     = 0,
+    parameter PORT_BANKS     = 0, // memory banks behind each output port; 0 = flat layout
+    // Platform memory (HBM) aperture width. Only used when PORT_BANKS != 0:
+    // VX_mem_remap packs the bank index against the TOP of the aperture, so
+    // this must be the aperture size, never the (wider) AXI address width --
+    // otherwise the high ports address past the end of physical memory.
+    // Literal default on purpose: libs/ modules include only VX_platform.vh and
+    // must stay config-independent, so the instantiator passes the real width.
+    parameter PORT_ADDR_WIDTH = 34,
     parameter TAG_BUFFER_SIZE= 16,
     parameter ARBITER        = "R",
     parameter REQ_OUT_BUF    = 0,
@@ -113,8 +121,32 @@ module VX_axi_adapter #(
     localparam REQ_XBAR_DATAW = 1 + BANK_ADDR_WIDTH + DATA_SIZE + DATA_WIDTH + XBAR_TAG_WIDTH;
     localparam RSP_XBAR_DATAW = DATA_WIDTH + READ_TAG_WIDTH;
 
+    // Bank-contiguous output layout. The flat layout leaves the port index at
+    // LOG2_DATA_SIZE, so every port emits addresses across the whole memory
+    // aperture. With PORT_BANKS set, the port index moves to the top of the
+    // address instead and each port covers exactly PORT_BANKS contiguous banks
+    // — what a platform expects when a port is bound to a subset of its memory
+    // channels. Blocks still round-robin over ports, then over the banks a port
+    // owns, so a linear sweep touches every bank.
+    // Total HBM banks behind all output ports (PORT_BANKS==0 => flat layout,
+    // the shared remap is not instantiated and these are unused).
+    localparam PORT_BANKS_N   = (PORT_BANKS == 0) ? 1 : PORT_BANKS;
+    localparam HBM_NUM_BANKS  = NUM_BANKS_OUT * PORT_BANKS_N;
+
     `STATIC_ASSERT ((DST_ADDR_WDITH >= ADDR_WIDTH_IN), ("invalid address width: current=%0d, expected=%0d", DST_ADDR_WDITH, ADDR_WIDTH_IN))
     `STATIC_ASSERT ((TAG_WIDTH_OUT >= DST_TAG_WIDTH), ("invalid output tag width: current=%0d, expected=%0d", TAG_WIDTH_OUT, DST_TAG_WIDTH))
+    `STATIC_ASSERT ((PORT_BANKS == 0) || (INTERLEAVE != 0), ("bank-contiguous layout takes the port index from the low address bits, which needs INTERLEAVE"))
+    // The offset a port emits inside one bank must not spill into the bank index.
+    // The remapped address must fit the AXI address port. The device address
+    // BUS is wider than the aperture (MEM_ADDR_WIDTH 48 vs a 34-bit HBM), so
+    // "every device address is inside the aperture" is an allocator property,
+    // not a static one -- it is checked at runtime below, per request.
+    `STATIC_ASSERT ((PORT_BANKS == 0) || (PORT_ADDR_WIDTH <= ADDR_WIDTH_OUT), ("HBM aperture %0d wider than the AXI address port %0d", PORT_ADDR_WIDTH, ADDR_WIDTH_OUT))
+
+    // Block index bits that fit inside the aperture, as seen on xbar_addr_out
+    // (which already has the BANK_SEL_BITS stripped off the low end).
+    localparam APERTURE_BLK_BITS = PORT_ADDR_WIDTH - LOG2_DATA_SIZE - BANK_SEL_BITS;
+
 
     // Bank selection
 
@@ -248,11 +280,50 @@ module VX_axi_adapter #(
 
         assign req_xbar_ready_out[i] = xbar_rw_out ? axi_write_ready : m_axi_arready[i];
 
+        // Bank-contiguous address, from the SHARED VX_mem_remap so the cores'
+        // path and the CP's VX_cp_axi_remap can never drift apart.
+        // UNUSED_VAR is a no-op under SYNTHESIS, so the flat-layout arm needs a
+        // pragma rather than a macro to keep the lint clean in both modes.
+        /* verilator lint_off UNUSEDSIGNAL */
+        wire [PORT_ADDR_WIDTH-1:0] bc_addr_out;
+        /* verilator lint_on UNUSEDSIGNAL */
+    if (PORT_BANKS != 0) begin : g_bank_contig
+        wire [PORT_ADDR_WIDTH-1:0] dev_byte_addr =
+            ((PORT_ADDR_WIDTH'(xbar_addr_out) << BANK_SEL_BITS) | PORT_ADDR_WIDTH'(i)) << LOG2_DATA_SIZE;
+        /* verilator lint_off UNUSEDSIGNAL */ // only the assert reads it
+        wire [BANK_SEL_WIDTH-1:0] bc_port_sel;
+        /* verilator lint_on UNUSEDSIGNAL */
+        VX_mem_remap #(
+            .ADDR_W     (PORT_ADDR_WIDTH),
+            .BLOCK_SIZE (DATA_SIZE),
+            .NUM_BANKS  (HBM_NUM_BANKS),
+            .NUM_PORTS  (NUM_BANKS_OUT)
+        ) bank_remap (
+            .dev_addr (dev_byte_addr),
+            .hbm_addr (bc_addr_out),
+            .port_sel (bc_port_sel)
+        );
+        // Structurally guaranteed: block index i mod NUM_BANKS_OUT == i.
+        `RUNTIME_ASSERT (bc_port_sel == BANK_SEL_WIDTH'(i), ("%t: *** VX_axi_adapter: remap sent bank %0d to port %0d", $time, i, bc_port_sel))
+        // A device address above the HBM aperture would be silently truncated
+        // by the remap, landing on another bank's data.
+        if (BANK_ADDR_WIDTH > APERTURE_BLK_BITS) begin : g_aperture_check
+            /* verilator lint_off UNUSEDSIGNAL */ // only the assert reads it
+            wire [BANK_ADDR_WIDTH-APERTURE_BLK_BITS-1:0] addr_hi = xbar_addr_out[BANK_ADDR_WIDTH-1:APERTURE_BLK_BITS];
+            /* verilator lint_on UNUSEDSIGNAL */
+            `RUNTIME_ASSERT (~req_xbar_valid_out[i] || (addr_hi == 0), ("%t: *** VX_axi_adapter: device address 0x%0h past the %0d-bit HBM aperture", $time, xbar_addr_out, PORT_ADDR_WIDTH))
+        end
+    end else begin : g_no_bank_contig
+        assign bc_addr_out = '0;
+    end
+
         // AXI write address channel
 
         assign m_axi_awvalid[i] = req_xbar_valid_out[i] && xbar_rw_out && ~m_axi_aw_ack;
 
-    if (INTERLEAVE) begin : g_m_axi_awaddr_i
+    if (PORT_BANKS != 0) begin : g_m_axi_awaddr_bc
+        assign m_axi_awaddr[i]  = ADDR_WIDTH_OUT'(bc_addr_out);
+    end else if (INTERLEAVE) begin : g_m_axi_awaddr_i
         assign m_axi_awaddr[i]  = (ADDR_WIDTH_OUT'(xbar_addr_out) << (BANK_SEL_BITS + LOG2_DATA_SIZE)) | (ADDR_WIDTH_OUT'(i) << LOG2_DATA_SIZE);
     end else begin : g_m_axi_awaddr_ni
         assign m_axi_awaddr[i]  = (ADDR_WIDTH_OUT'(xbar_addr_out) << LOG2_DATA_SIZE) | (ADDR_WIDTH_OUT'(i) << (BANK_ADDR_WIDTH + LOG2_DATA_SIZE));
@@ -288,7 +359,9 @@ module VX_axi_adapter #(
         assign m_axi_arvalid[i] = req_xbar_valid_out[i] && ~xbar_rw_out;
 
         // convert address to byte-addressable space
-    if (INTERLEAVE) begin : g_m_axi_araddr_i
+    if (PORT_BANKS != 0) begin : g_m_axi_araddr_bc
+        assign m_axi_araddr[i]  = ADDR_WIDTH_OUT'(bc_addr_out);
+    end else if (INTERLEAVE) begin : g_m_axi_araddr_i
         assign m_axi_araddr[i]  = (ADDR_WIDTH_OUT'(xbar_addr_out) << (BANK_SEL_BITS + LOG2_DATA_SIZE)) | (ADDR_WIDTH_OUT'(i) << LOG2_DATA_SIZE);
     end else begin : g_m_axi_araddr_ni
         assign m_axi_araddr[i]  = (ADDR_WIDTH_OUT'(xbar_addr_out) << LOG2_DATA_SIZE) | (ADDR_WIDTH_OUT'(i) << (BANK_ADDR_WIDTH + LOG2_DATA_SIZE));

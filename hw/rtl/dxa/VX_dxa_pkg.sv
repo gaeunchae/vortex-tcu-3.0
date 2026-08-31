@@ -18,6 +18,14 @@
 
 package VX_dxa_pkg;
 
+    // A package does NOT inherit $unit-scope DPI imports under VCS, so the
+    // `TRACE macros used below need dpi_trace imported locally -- the same
+    // local-import pattern VX_trace_pkg / VX_tcu_pkg already use.
+`ifdef SV_DPI
+    import "DPI-C" function void dpi_trace(input int level, input string format /*verilator sformat*/);
+`endif
+
+
     import VX_gpu_pkg::*;
 
     // DXA local-memory path: dimensioned to cover all banks in one request.

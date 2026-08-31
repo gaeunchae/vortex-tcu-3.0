@@ -23,7 +23,10 @@
 
 module VX_dxa_addr_gen import VX_gpu_pkg::*, VX_dxa_pkg::*; #(
     parameter GMEM_LINE_SIZE  = `VX_CFG_L1_LINE_SIZE,
-    parameter GMEM_ADDR_WIDTH = `VX_CFG_MEM_ADDR_WIDTH - `CLOG2(GMEM_LINE_SIZE)
+    parameter GMEM_ADDR_WIDTH = `VX_CFG_MEM_ADDR_WIDTH - `CLOG2(GMEM_LINE_SIZE),
+    // Used by the port list below, so it must be declared here: VCS rejects a
+    // forward reference from a port to a module-body localparam (IEEE 1800 6.18).
+    localparam CL_OFF_BITS    = `CLOG2(GMEM_LINE_SIZE)
 ) (
     input  wire                        clk,
     input  wire                        reset,
@@ -48,7 +51,6 @@ module VX_dxa_addr_gen import VX_gpu_pkg::*, VX_dxa_pkg::*; #(
     output wire [15:0]                 out_per_lane_stride_bytes,
     output wire [3:0]                  out_elem_bytes
 );
-    localparam CL_OFF_BITS = `CLOG2(GMEM_LINE_SIZE);
 
     `STATIC_ASSERT(`IS_POW2(GMEM_LINE_SIZE), ("GMEM_LINE_SIZE must be power of 2"))
 

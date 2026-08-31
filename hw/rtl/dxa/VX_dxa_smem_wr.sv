@@ -30,7 +30,11 @@ module VX_dxa_smem_wr import VX_gpu_pkg::*, VX_dxa_pkg::*; #(
     parameter CL_SIZE         = `VX_CFG_L1_LINE_SIZE,
     parameter SMEM_WORD_SIZE  = DXA_LMEM_WORD_SIZE,
     parameter SMEM_ADDR_WIDTH = DXA_LMEM_ADDR_W,
-    parameter GMEM_DATAW      = CL_SIZE * 8
+    parameter GMEM_DATAW      = CL_SIZE * 8,
+    // Used by the port list below (see VX_dxa_addr_gen for why).
+    localparam CL_OFF_BITS    = `CLOG2(CL_SIZE),
+    localparam TAG_W          = `CLOG2(MAX_OUTSTANDING),
+    localparam SEQ_W          = `CLOG2(MAX_OUTSTANDING + 1)
 ) (
     input  wire                        clk,
     input  wire                        reset,
@@ -88,11 +92,8 @@ module VX_dxa_smem_wr import VX_gpu_pkg::*, VX_dxa_pkg::*; #(
     output wire [31:0]                 perf_lmem_writes
 `endif
 );
-    localparam CL_OFF_BITS  = `CLOG2(CL_SIZE);
     localparam SMEM_OFF_W   = `CLOG2(SMEM_WORD_SIZE);
     localparam SMEM_DATAW   = SMEM_WORD_SIZE * 8;
-    localparam TAG_W        = `CLOG2(MAX_OUTSTANDING);
-    localparam SEQ_W        = `CLOG2(MAX_OUTSTANDING + 1);
     localparam FILL_CAP     = CL_SIZE + SMEM_WORD_SIZE;
     localparam FILL_W       = `CLOG2(FILL_CAP + 1);
 

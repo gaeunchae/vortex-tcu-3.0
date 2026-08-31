@@ -22,7 +22,7 @@ module vortex_afu #(
 	parameter C_M_AXI_MEM_DATA_WIDTH  = (`VX_CFG_PLATFORM_MEMORY_DATA_SIZE * 8),
 	parameter C_M_AXI_MEM_ADDR_WIDTH  = 64,
 `ifdef PLATFORM_MERGED_MEMORY_INTERFACE
-    parameter C_M_AXI_MEM_NUM_BANKS   = 1
+    parameter C_M_AXI_MEM_NUM_BANKS   = `PLATFORM_MEMORY_MERGED_PORTS
 `else
     parameter C_M_AXI_MEM_NUM_BANKS   = `VX_CFG_PLATFORM_MEMORY_NUM_BANKS
 `endif
@@ -33,7 +33,7 @@ module vortex_afu #(
 
 	// AXI4 master interface
 `ifdef PLATFORM_MERGED_MEMORY_INTERFACE
-	`MP_REPEAT (1, GEN_AXI_MEM, MP_COMMA),
+	`MP_REPEAT (`PLATFORM_MEMORY_MERGED_PORTS, GEN_AXI_MEM, MP_COMMA),
 `else
 	`MP_REPEAT (`VX_CFG_PLATFORM_MEMORY_NUM_BANKS, GEN_AXI_MEM, MP_COMMA),
 `endif
@@ -78,7 +78,7 @@ module vortex_afu #(
 		.clk             	(ap_clk),
 		.reset           	(~ap_rst_n),
 	`ifdef PLATFORM_MERGED_MEMORY_INTERFACE
-		`MP_REPEAT (1, AXI_MEM_ARGS, MP_COMMA),
+		`MP_REPEAT (`PLATFORM_MEMORY_MERGED_PORTS, AXI_MEM_ARGS, MP_COMMA),
 	`else
 		`MP_REPEAT (`VX_CFG_PLATFORM_MEMORY_NUM_BANKS, AXI_MEM_ARGS, MP_COMMA),
 	`endif

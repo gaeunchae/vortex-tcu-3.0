@@ -18,6 +18,12 @@
 
 ///////////////////////////////////////////////////////////////////////////////
 
+// Paste `__LINE__ onto an identifier. It has to go through a second macro so the
+// line number is expanded before the concatenation: `NAME`__LINE__ is a syntax
+// error under VCS, and `NAME``__LINE__ pastes the literal text, which collides
+// as soon as a file has two uses.
+`define UNIQUE_NAME(prefix, line) prefix``line
+
 `ifdef SIMULATION
 
 `define STATIC_ASSERT(cond, msg) \
@@ -29,7 +35,7 @@
 
 `define PACKAGE_ASSERT(cond) \
     /* verilator lint_on UNUSED */ \
-    typedef bit [((cond) ? 0 : -1) : 0] static_assertion_at_line_`__LINE__; \
+    typedef bit [((cond) ? 0 : -1) : 0] `UNIQUE_NAME(static_assertion_at_line_, `__LINE__); \
     /* verilator lint_off UNUSED */
 
 `define ERROR(msg) \
@@ -230,7 +236,7 @@
 `define STRINGIFY(x) `"x`"
 
 `define MAP_AOS_SOA(__i, __size, __lhs, __rhs) \
-    for (genvar __i = 0; __i < (__size); __i++) begin : g_map_aos_soa_`__LINE__ \
+    for (genvar __i = 0; __i < (__size); __i++) begin : `UNIQUE_NAME(g_map_aos_soa_, `__LINE__) \
         assign __lhs = __rhs; \
     end
 
