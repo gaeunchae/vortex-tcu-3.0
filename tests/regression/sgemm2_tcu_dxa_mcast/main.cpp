@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cmath>
 #include <iostream>
+#include <cstdlib>
 #include <rvfloats.h>
 #include <string.h>
 #include <tensor_cfg.h>
@@ -792,9 +793,16 @@ int main(int argc, char *argv[]) {
   double elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(time_end - time_start).count();
   printf("Elapsed time: %lg ms\n", elapsed);
 
-  std::cout << "verify result" << std::endl;
+  // matmul_cpu is a naive M*N*K triple loop, so verification costs the same
+  // arithmetic the accelerator just did -- on the FLUX shapes (up to 2.2e11
+  // MACs) that is hours per invocation on the host. SGEMM_SKIP_VERIFY=1 drops
+  // it for timing sweeps ONLY; the device cycles reported above are unaffected.
+  const bool skip_verify = (getenv("SGEMM_SKIP_VERIFY") != nullptr);
   int errors = 0;
-  {
+  if (skip_verify) {
+    std::cout << "verify result: SKIPPED (SGEMM_SKIP_VERIFY set) -- timing only" << std::endl;
+  } else {
+    std::cout << "verify result" << std::endl;
     std::vector<otype_t> h_ref(sizeC);
     matmul_cpu(h_ref.data(), h_A.data(), h_B.data(), M, N, K);
 
