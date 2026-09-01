@@ -118,6 +118,18 @@ module Vortex import VX_gpu_pkg::*, VX_trace_pkg::*; (
         .TAG_WIDTH (L3_MEM_TAG_WIDTH)
     ) mem_bus_if[L3_MEM_PORTS]();
 
+`ifdef VX_CFG_DXA_DEDICATED_MEM
+    // DXA's bypass path. It carries L1-sized lines and the L1 arb tag, so it can
+    // only share the top-level port array if the line sizes agree -- the array's
+    // address width is derived from L3_LINE_SIZE.
+    `STATIC_ASSERT(`VX_CFG_L1_LINE_SIZE == `VX_CFG_L3_LINE_SIZE,
+        ("VX_CFG_DXA_DEDICATED_MEM needs L1_LINE_SIZE == L3_LINE_SIZE"))
+    VX_mem_bus_if #(
+        .DATA_SIZE (`VX_CFG_L1_LINE_SIZE),
+        .TAG_WIDTH (L1_MEM_ARB_TAG_WIDTH)
+    ) dxa_mem_bus_if[DXA_TOP_PORTS]();
+`endif
+
     VX_cache_wrap #(
         .INSTANCE_ID    ("l3cache"),
         .CACHE_SIZE     (`VX_CFG_L3_CACHE_SIZE),
@@ -160,15 +172,39 @@ module Vortex import VX_gpu_pkg::*, VX_trace_pkg::*; (
         assign mem_req_byteen[i] = mem_bus_if[i].req_data.byteen;
         assign mem_req_addr[i]   = mem_bus_if[i].req_data.addr;
         assign mem_req_data[i]   = mem_bus_if[i].req_data.data;
-        assign mem_req_tag[i]    = mem_bus_if[i].req_data.tag;
+        // Explicit width: VX_MEM_TAG_WIDTH is the max over the port groups when
+        // DXA has dedicated ports, so this side may need to zero-extend.
+        assign mem_req_tag[i]    = VX_MEM_TAG_WIDTH'(mem_bus_if[i].req_data.tag);
         `UNUSED_VAR (mem_bus_if[i].req_data.attr)
         assign mem_bus_if[i].req_ready = mem_req_ready[i];
 
         assign mem_bus_if[i].rsp_valid     = mem_rsp_valid[i];
         assign mem_bus_if[i].rsp_data.data = mem_rsp_data[i];
-        assign mem_bus_if[i].rsp_data.tag  = mem_rsp_tag[i];
+        assign mem_bus_if[i].rsp_data.tag  = mem_rsp_tag[i][L3_MEM_TAG_WIDTH-1:0];
         assign mem_rsp_ready[i] = mem_bus_if[i].rsp_ready;
     end
+
+`ifdef VX_CFG_DXA_DEDICATED_MEM
+    // DXA's ports sit above the LLC's. VX_MEM_TAG_WIDTH is the max of the two
+    // tag widths, so this side zero-extends on the way out and truncates on the
+    // way back; VX_axi_adapter returns the tag it was given.
+    for (genvar i = 0; i < DXA_TOP_PORTS; ++i) begin : g_dxa_mem_bus_if
+        localparam P = L3_MEM_PORTS + i;
+        assign mem_req_valid[P]  = dxa_mem_bus_if[i].req_valid;
+        assign mem_req_rw[P]     = dxa_mem_bus_if[i].req_data.rw;
+        assign mem_req_byteen[P] = dxa_mem_bus_if[i].req_data.byteen;
+        assign mem_req_addr[P]   = dxa_mem_bus_if[i].req_data.addr;
+        assign mem_req_data[P]   = dxa_mem_bus_if[i].req_data.data;
+        assign mem_req_tag[P]    = VX_MEM_TAG_WIDTH'(dxa_mem_bus_if[i].req_data.tag);
+        `UNUSED_VAR (dxa_mem_bus_if[i].req_data.attr)
+        assign dxa_mem_bus_if[i].req_ready = mem_req_ready[P];
+
+        assign dxa_mem_bus_if[i].rsp_valid     = mem_rsp_valid[P];
+        assign dxa_mem_bus_if[i].rsp_data.data = mem_rsp_data[P];
+        assign dxa_mem_bus_if[i].rsp_data.tag  = mem_rsp_tag[P][L1_MEM_ARB_TAG_WIDTH-1:0];
+        assign mem_rsp_ready[P] = dxa_mem_bus_if[i].rsp_ready;
+    end
+`endif
 
     wire [`VX_CFG_NUM_CLUSTERS-1:0] per_cluster_busy;
 
@@ -213,6 +249,10 @@ module Vortex import VX_gpu_pkg::*, VX_trace_pkg::*; (
             .dcr_bus_if         (per_cluster_dcr_bus_if[cluster_id]),
 
             .mem_bus_if         (per_cluster_mem_bus_if[cluster_id * L2_MEM_PORTS +: L2_MEM_PORTS]),
+
+        `ifdef VX_CFG_DXA_DEDICATED_MEM
+            .dxa_mem_bus_if     (dxa_mem_bus_if[cluster_id * DXA_DED_PORTS +: DXA_DED_PORTS]),
+        `endif
 
             .kmu_bus_if         (per_cluster_kmu_bus_if[cluster_id +: 1]),
 

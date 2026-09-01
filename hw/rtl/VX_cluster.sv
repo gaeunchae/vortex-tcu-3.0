@@ -37,6 +37,12 @@ module VX_cluster import VX_gpu_pkg::*;
     // Memory
     VX_mem_bus_if.master        mem_bus_if [L2_MEM_PORTS],
 
+`ifdef VX_CFG_DXA_DEDICATED_MEM
+    // DXA's dedicated memory ports. These skip L2 and the LLC and are crossbarred
+    // straight onto the AXI masters, so DXA width is independent of the D-cache.
+    VX_mem_bus_if.master        dxa_mem_bus_if [DXA_DED_PORTS],
+`endif
+
     // KMU bus
     VX_kmu_bus_if.slave         kmu_bus_if[1],
 
@@ -172,7 +178,7 @@ module VX_cluster import VX_gpu_pkg::*;
     VX_mem_bus_if #(
         .DATA_SIZE (`VX_CFG_L1_LINE_SIZE),
         .TAG_WIDTH (L1_MEM_ARB_TAG_WIDTH)
-    ) dxa_gmem_bus_if[DXA_L2_GMEM_PORTS]();
+    ) dxa_gmem_bus_if[DXA_GMEM_PORTS]();
     VX_mem_bus_if #(
         .DATA_SIZE   (DXA_LMEM_WORD_SIZE),
         .TAG_WIDTH   (DXA_LMEM_OUT_TAG_W),
@@ -239,7 +245,7 @@ module VX_cluster import VX_gpu_pkg::*;
     VX_dxa_core #(
         .INSTANCE_ID      (`SFORMATF(("%s-dxa-core", INSTANCE_ID))),
         .NUM_REQS     (NUM_SOCKETS),
-        .GMEM_OUT_PORTS   (DXA_L2_GMEM_PORTS)
+        .GMEM_OUT_PORTS   (DXA_GMEM_PORTS)
     ) dxa_core (
         .clk              (clk),
         .reset            (reset),
@@ -293,10 +299,18 @@ module VX_cluster import VX_gpu_pkg::*;
         `ASSIGN_VX_MEM_BUS_IF (l2_arb_in_if[i], socket_mem_bus_if[i]);
     end
 
-    // Bind DXA gmem ports second (low priority, indices L2_SOCKET_REQS+..)
+    // Bind DXA gmem ports second (low priority, indices L2_SOCKET_REQS+..).
+    // Empty when DXA has its own ports: DXA_L2_GMEM_PORTS is then 0 and the
+    // tie-off loop below covers the whole upper half.
     for (genvar i = 0; i < DXA_L2_GMEM_PORTS; ++i) begin : g_dxa_l2_bind
         `ASSIGN_VX_MEM_BUS_IF (l2_arb_in_if[L2_SOCKET_REQS + i], dxa_gmem_bus_if[i]);
     end
+
+`ifdef VX_CFG_DXA_DEDICATED_MEM
+    for (genvar i = 0; i < DXA_DED_PORTS; ++i) begin : g_dxa_ded_bind
+        `ASSIGN_VX_MEM_BUS_IF (dxa_mem_bus_if[i], dxa_gmem_bus_if[i]);
+    end
+`endif
 
     // Tie off unused DXA slots
     for (genvar i = DXA_L2_GMEM_PORTS; i < L2_SOCKET_REQS; ++i) begin : g_dxa_l2_tieoff

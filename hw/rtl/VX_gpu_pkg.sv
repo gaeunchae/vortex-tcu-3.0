@@ -1415,10 +1415,26 @@ package VX_gpu_pkg;
 `else
     localparam L2_DXA_NUM_REQS      = 0;
 `endif
-    // DXA uses a fixed small number of L2 ports (= NUM_DXA_UNITS) to avoid
-    // a combinational ready-valid loop when output-select distribution fans
-    // out 1 worker across many L2 ports in multi-core configs.
-    localparam DXA_L2_GMEM_PORTS    = `MIN(L2_DXA_NUM_REQS, L2_SOCKET_REQS);
+    // DXA memory path. Two shapes:
+    //  * shared (default): DXA rides the LSU's L2 arbiter inputs, so its port
+    //    count is capped by L2_SOCKET_REQS (= L1_MEM_PORTS). Widening DXA then
+    //    forces DCACHE_NUM_BANKS up, which widens L1, L2 and the memory bus too.
+    //  * dedicated (VX_CFG_DXA_DEDICATED_MEM): DXA bypasses L2/L3 and becomes
+    //    extra VX_axi_adapter crossbar inputs at the top, so DXA width and
+    //    D-cache width are independent.
+    // Either way the count stays <= NUM_DXA_UNITS: fanning one worker out across
+    // more ports reintroduces a combinational ready-valid loop.
+`ifdef VX_CFG_DXA_DEDICATED_MEM
+    localparam DXA_DED_PORTS        = L2_DXA_NUM_REQS;
+`else
+    localparam DXA_DED_PORTS        = 0;
+`endif
+    localparam DXA_L2_GMEM_PORTS    = (DXA_DED_PORTS != 0) ? 0 : `MIN(L2_DXA_NUM_REQS, L2_SOCKET_REQS);
+    // Width of the cluster's dxa_gmem_bus_if array. Never 0 while DXA is on, so
+    // the interface array stays legal; it is the L2 bind loop that goes empty.
+    localparam DXA_GMEM_PORTS       = (DXA_DED_PORTS != 0) ? DXA_DED_PORTS : DXA_L2_GMEM_PORTS;
+    // Dedicated DXA ports summed over clusters, appended after L3_MEM_PORTS.
+    localparam DXA_TOP_PORTS        = `VX_CFG_NUM_CLUSTERS * DXA_DED_PORTS;
     localparam DXA_L2_ARB_TAG_BITS  = `VX_CFG_EXT_DXA_ENABLED * `CLOG2(2);
 
     // Core request tag bits (includes DXA arb overhead when enabled)
@@ -1466,11 +1482,19 @@ package VX_gpu_pkg;
 
     ///////////////////////////////////////////////////////////////////////////
 
-    localparam VX_MEM_PORTS =           L3_MEM_PORTS;
+    // Ports [0 .. L3_MEM_PORTS-1] carry the cached path out of the LLC; ports
+    // [L3_MEM_PORTS .. ] are DXA's dedicated bypass ports, present only under
+    // VX_CFG_DXA_DEDICATED_MEM. VX_axi_adapter crossbars all of them onto the
+    // AXI masters by address, so the extra inputs need no separate mux.
+    localparam VX_MEM_PORTS =           L3_MEM_PORTS + DXA_TOP_PORTS;
     localparam VX_MEM_BYTEEN_WIDTH =    `VX_CFG_L3_LINE_SIZE;
     localparam VX_MEM_ADDR_WIDTH =      (`VX_CFG_MEM_ADDR_WIDTH - `CLOG2(`VX_CFG_L3_LINE_SIZE));
     localparam VX_MEM_DATA_WIDTH =      (`VX_CFG_L3_LINE_SIZE * 8);
-    localparam VX_MEM_TAG_WIDTH =       L3_MEM_TAG_WIDTH;
+    // The two groups carry different tags, so the port array is as wide as the
+    // wider of them and the narrower side zero-extends.
+    localparam VX_MEM_TAG_WIDTH =       (DXA_TOP_PORTS != 0)
+                                          ? `MAX(L3_MEM_TAG_WIDTH, L1_MEM_ARB_TAG_WIDTH)
+                                          : L3_MEM_TAG_WIDTH;
 
     ///////////////////////// Miscaellaneous functions ////////////////////////
 

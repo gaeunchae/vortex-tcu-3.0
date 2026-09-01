@@ -43,7 +43,16 @@ VX_CFG_EXT_RASTER_ENABLE = false
 VX_CFG_EXT_OM_ENABLE = false
 # Cluster-level DXA engine count (decoupled from VX_CFG_NUM_CORES/VX_CFG_SOCKET_SIZE).
 VX_CFG_NUM_DXA_UNITS = "expr: max(1, up($VX_CFG_NUM_CORES / 8))"
-VX_CFG_DXA_MEM_PORTS = "expr: min($VX_CFG_NUM_DXA_UNITS, up($VX_CFG_NUM_CORES / $VX_CFG_SOCKET_SIZE) * $VX_CFG_L1_MEM_PORTS)"
+# Give DXA its own top-level memory ports instead of sharing the L2 arbiter's
+# inputs with the LSU. Off: DXA_MEM_PORTS is capped by L1_MEM_PORTS, so widening
+# the DXA path means widening the D-cache -- and that widens L1, L2 and the whole
+# memory bus with it. On: DXA bypasses L2/L3 and lands directly on
+# VX_axi_adapter as extra crossbar inputs, so DXA width and D-cache width are
+# independent. DXA only reads global memory and L2 is write-through, so no dirty
+# line can be missed; a producer store still needs its usual fence before the
+# descriptor is issued.
+VX_CFG_DXA_DEDICATED_MEM = false
+VX_CFG_DXA_MEM_PORTS = "expr: $VX_CFG_NUM_DXA_UNITS if $VX_CFG_DXA_DEDICATED_MEM else min($VX_CFG_NUM_DXA_UNITS, up($VX_CFG_NUM_CORES / $VX_CFG_SOCKET_SIZE) * $VX_CFG_L1_MEM_PORTS)"
 VX_CFG_DXA_QUEUE_SIZE = 16
 VX_CFG_DXA_MAX_INFLIGHT = 8
 
