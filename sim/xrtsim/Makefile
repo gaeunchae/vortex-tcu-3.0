@@ -143,7 +143,14 @@ VL_FLAGS += $(RTL_PKGS)
 RTL_DIRS := $(patsubst -I%,%,$(filter -I%,$(RTL_INCLUDE)))
 
 # Discover RTL source files from source directories
-RTL_SRCS := $(shell find $(RTL_DIRS) -type f \( -name '*.v' -o -name '*.vh' -o -name '*.sv' \))
+# RTL_INCLUDE carries -I$(ROOT_DIR)/hw, and in the build tree that directory also
+# holds the FPGA synthesis output (build/hw/syn/xilinx/xrt/<prefix>_*_hw, ~27k
+# transient Vivado files). Recursing into it makes simv depend on files a
+# concurrent v++ run creates and deletes mid-build, which fails as a bogus
+# "No rule to make target ..._stub.v". Prune the build dirs; the 19 real
+# sources under hw/syn (ASIC RAM libs, sandbox) live outside them.
+RTL_SRCS := $(shell find $(RTL_DIRS) \( -name '.Xil' -o -name '_x' -o -name '*_hw' \) -prune -o \
+	-type f \( -name '*.v' -o -name '*.vh' -o -name '*.sv' \) -print 2>/dev/null)
 
 # Enable Verilator multithreaded simulation
 THREADS ?= $(shell python3 -c 'import multiprocessing as mp; print(mp.cpu_count())')

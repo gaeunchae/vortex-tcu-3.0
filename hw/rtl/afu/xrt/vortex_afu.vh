@@ -25,9 +25,15 @@
 // Top-level m_axi_mem_* masters the merged memory interface presents. Must stay
 // a literal: it feeds MP_REPEAT, whose `_MP_REPEAT_``n paste survives only one
 // level of macro substitution in the count argument.
-// VX_axi_adapter leaves the master index inside the emitted address, so every
-// master drives the full device address range and must be mapped to the whole
-// memory aperture, never to a per-master slice.
+// The address a master emits depends on the layout, so the platform sp mapping
+// must match it (see platforms.mk, which keeps the two in lockstep):
+//   * flat (default) -- VX_axi_adapter re-inserts the master index at
+//     bit LOG2(BLOCK_SIZE), making the emitted address the IDENTITY of the
+//     device address, so every master spans the whole aperture and must be
+//     mapped to all of it.
+//   * PLATFORM_MEMORY_BANK_CONTIGUOUS -- VX_mem_remap moves the master index
+//     into the top address bits, so master i emits only its own contiguous
+//     slice and must be mapped to exactly that slice.
 `ifndef PLATFORM_MEMORY_MERGED_PORTS
 `define PLATFORM_MEMORY_MERGED_PORTS 1
 `endif

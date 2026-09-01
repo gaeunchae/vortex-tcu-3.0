@@ -35,7 +35,13 @@ ifneq ($(findstring xilinx_u55c,$(XSA)),)
   # defaults to 1 on a single-core build. Widen both or DXA keeps one port.
   MEM_PORTS ?= $(AXI_PORTS)
   CONFIGS += -DVX_CFG_DCACHE_NUM_BANKS=$(MEM_PORTS)
-  CONFIGS += -DVX_CFG_NUM_DXA_UNITS=$(MEM_PORTS)
+  # DXA_UNITS is split out from MEM_PORTS so the DXA engine count can be cut for
+  # area without narrowing the D-cache (and thus VX_MEM_PORTS / the master path).
+  # These defines are appended AFTER the environment's CONFIGS and gen_config.py
+  # lets the last -D win, so an env -DVX_CFG_NUM_DXA_UNITS would be overridden
+  # here -- set it through this variable instead.
+  DXA_UNITS ?= $(MEM_PORTS)
+  CONFIGS += -DVX_CFG_NUM_DXA_UNITS=$(DXA_UNITS)
   # HBM aperture mapping, selected by BANK_CONTIGUOUS.
   #
   # 1 (default): master i owns HBM[i*K : i*K+K-1], K = 32/AXI_PORTS -- the

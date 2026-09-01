@@ -152,6 +152,22 @@ public:
       device_index = atoi(device_index_s);
     }
 
+    // Pin to a specific card by PCIe BDF. XRT device indices are not stable
+    // across enumerations on a multi-card host, so an index can silently land
+    // on (and reprogram) a neighbour's card. XRT_DEVICE_BDF overrides the index.
+    // Only the C++ API can open a device by BDF string, so on the C API this is
+    // reported rather than ignored -- silently falling back to the index is
+    // exactly the case the variable exists to prevent.
+    const char *device_bdf_s = getenv("XRT_DEVICE_BDF");
+  #ifndef CPP_API
+    if (device_bdf_s != nullptr && *device_bdf_s != '\0') {
+      fprintf(stderr, "[VXDRV] Error: XRT_DEVICE_BDF=%s requires the C++ XRT API; "
+                      "refusing to fall back to XRT_DEVICE_INDEX=%d.\n",
+              device_bdf_s, device_index);
+      return -1;
+    }
+  #endif
+
     const char *xlbin_path_s = getenv("XRT_XCLBIN_PATH");
     if (xlbin_path_s == nullptr) {
       xlbin_path_s = DEFAULT_XCLBIN_PATH;
@@ -162,7 +178,11 @@ public:
     xrt::device xrtDevice;
     xrt::uuid   uuid;
     XRT_TRY()
-      xrtDevice = xrt::device(device_index);
+      if (device_bdf_s != nullptr && *device_bdf_s != '\0') {
+        xrtDevice = xrt::device(std::string(device_bdf_s));
+      } else {
+        xrtDevice = xrt::device(device_index);
+      }
       uuid      = xrtDevice.load_xclbin(xlbin_path_s);
     XRT_CATCH(-1)
     xrt::ip xrtKernel;
